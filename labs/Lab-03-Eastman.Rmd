@@ -1,0 +1,81 @@
+---
+title: "Lab 03 - Preparing Data For Analysis"
+author: "Jason Eastman"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=TRUE, message=FALSE, warning=FALSE, fig.width=10 )
+```
+
+# Libraries
+
+```{r}
+library( dplyr )
+library( pander )
+library( tidyr )
+```
+
+# Part 1: Data Concordance
+
+```{r}
+data <- read.csv( "data/rodeo/LTDB-DATA-DICTIONARY.csv", stringsAsFactors = FALSE)
+head(data,20) %>% pander()
+```
+
+# Part 2: Build a Variable Filter
+
+## ONE
+
+```{r}
+search_category <- function(x) {
+  these <- grep(x, data$category)
+  dat.sub <- data[ these, ]
+  return( dat.sub )
+}
+
+search_category("race-ses")
+```
+
+## TWO
+
+```{r}
+search_description <- function(x) {
+  these <- grepl( x, data$definition, ignore.case=T)
+  dat.sub <- data[ these, ]
+  return( dat.sub )
+}
+
+search_description("income")
+```
+
+## THREE
+
+```{r}
+search_timeperiod <- function(x) {
+  col_num <- grep( x, names(data) )
+  these <- !is.na(data[,col_num])
+  dat.sub <- data[these,]
+  return( dat.sub )
+}
+
+search_timeperiod("1970")
+
+# The above is not right, here is my psuedo-code:
+
+# create a function called search_timeperiod
+# identify the columns that match the years inputted
+# search each column for a non-empty field and add row to subset data
+# return subset data
+```
+
+## Challenge Question
+
+No clue, and no time this week

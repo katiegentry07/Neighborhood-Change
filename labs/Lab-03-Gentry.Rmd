@@ -1,0 +1,103 @@
+---
+title: "Lab-03-Gentry"
+author: "Katie Gentry"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+---
+
+## Load packages and data needed to complete analysis
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(plyr)
+library(pander)
+library(tidyr)
+library(readr)
+library(here)
+library(stringr)
+library(ggrepel)
+```
+
+### Using the LTDB Codebook and the Data Concordance File, the complete meta-data was entered into Excel, cleaned, and saved as a CSV file to be loaded into R.
+
+```{r}
+ltdb_data_dictionary <- read_csv("~/R/win-library/analytic_project/cpp-528-spr-2020-group-01/data/raw/ltdb_data_dictionary_kgentry.csv") %>%
+    rename_all(str_to_lower)
+```
+
+## Filter data
+
+### In order to better understand the data dictionary and the available data points, data can be filtered by the categories created in the LTDB Codebook Excel. 
+
+```{r}
+#filter by theme or group
+filter_category <- function(df, value, column_name) {
+  # Return a df whose `column_name` values are exactly equal to `value`
+  #
+  # Arguments
+  #   - df:           a data frame
+  #   - value:        a number
+  #   - column_name:  a character vector that represents a column
+  #
+  # Return
+  #   - a data frame
+  
+  # filter the df based on records that contain values less than or equal
+  # to the value in the given column_name.
+  tmp_df <- dplyr::filter(df, 
+                          # note: the use of get() refers to
+                          #       R objects by name rather than value.
+                          get(column_name) == value)
+  
+  # return to the Global Environment
+  return(tmp_df)
+}
+```
+
+### Using the filter_category function built, the value can be changed for what is being searched for. In this example, race is being searched for.
+
+```{r}
+race_data <- filter_category(ltdb_data_dictionary, value = "race", column_name = "category") 
+race_data
+```
+
+```{r}
+race_ses_data <- filter_category(ltdb_data_dictionary, value = "race-ses", column_name = "category") 
+race_ses_data
+```
+
+### It is also possile to search for variables across the strings by searching with the grepl() function. For example, if searching for Hispanic, all variables related to Hispanic would appear including Hispanic people in poverty, population Hispanic, and Median Household Income of Hispanics. The dplyr function allows the filter to include any string that is included within the "quotes".  
+
+```{r}
+search_description <- function(x) {
+  desc <- grepl( x, ltdb_data_dictionary$definition, ignore.case=T)
+  dat.desc <- ltdb_data_dictionary[ desc, ]
+  return( dat.desc )
+}
+
+search_description("hispanic")
+```
+
+### Another possible search is across columns to include data in each column available. In order to find data over years, this search would be performed. 
+
+```{r}
+search_time <- function(x) {
+  columns <- grepl (x, ltdb_data_dictionary, ignore.case = T)
+  these <- !is.na(ltdb_data_dictionary[, columns])
+  data1970 <- merge(ltdb_data_dictionary$`1970.f`, ltdb_data_dictionary$`1970.s`, by="root")
+  data1980 <- merge(ltdb_data_dictionary$`1980.f`, ltdb_data_dictionary$`1980.s`, by="root")
+  data1990 <- merge(ltdb_data_dictionary$`1990.f`, ltdb_data_dictionary$`1990.s`, by="root")
+  data2000 <- merge(ltdb_data_dictionary$`2000.f`, ltdb_data_dictionary$`2000.s`, by="root")
+  data2010 <- merge(ltdb_data_dictionary$`2010.f`, ltdb_data_dictionary$`2010.s`, by="root")
+  shared <- intersect (data1970, data1980, data1990, data2000, data2010)
+  return(shared)
+}
+```
+
+#### I'm struggling with how to search multiple columns.

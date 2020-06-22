@@ -1,0 +1,671 @@
+---
+title: "Lab 05 - Predicting MHV Change"
+author: "Jason Eastman"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=TRUE, message=FALSE, warning=FALSE, fig.width=10 )
+```
+
+# Libraries
+
+```{r}
+library( dplyr )
+library( knitr )
+library( pander )
+library( stargazer )
+library( scales )
+library( psych )
+
+set.seed( 1234 )
+
+s.type <- "html"
+```
+
+# Helper Functions
+
+```{r}
+panel.cor <- function(x, y, digits=2, prefix="", cex.cor)
+{
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- abs(cor(x, y))
+    txt <- format(c(r, 0.123456789), digits=digits)[1]
+    txt <- paste(prefix, txt, sep="")
+    if(missing(cex.cor)) cex <- 0.8/strwidth(txt)
+    
+    test <- cor.test(x,y)
+    # borrowed from printCoefmat
+    Signif <- symnum(test$p.value, corr = FALSE, na = FALSE,
+                  cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+                  symbols = c("***", "**", "*", ".", " "))
+    
+    text(0.5, 0.5, txt, cex = 1.5 )
+    text(.7, .8, Signif, cex=cex, col=2)
+}
+
+panel.smooth <- function (x, y, col = par("col"), bg = NA, pch = par("pch"), 
+    cex = 0.5, col.smooth = "red", span = 2/3, iter = 3, ...) 
+{
+    points(x, y, pch = 19, col = gray(0.7,0.2), bg = bg, cex = cex)
+    ok <- is.finite(x) & is.finite(y)
+    if (any(ok)) 
+        lines(stats::lowess(x[ok], y[ok], f = span, iter = iter), 
+            col = col.smooth, lwd=2, ...)
+}
+
+# custom plot
+jplot <- function( x1, x2, lab1="", lab2="", draw.line=T, ... )
+{
+
+    plot( x1, x2,
+          pch=19, 
+          col=gray(0.6, alpha = 0.2), 
+          cex=0.5,  
+          bty = "n",
+          xlab=lab1, 
+          ylab=lab2, cex.lab=1.5,
+        ... )
+
+    if( draw.line==T ){ 
+        ok <- is.finite(x1) & is.finite(x2)
+        lines( lowess(x2[ok]~x1[ok]), col="red", lwd=3 ) }
+
+}
+```
+
+# Part 1 - Data
+
+## *Similar to your previous lab, create a dataset that includes 2000 and 2010 census variables drop all rural census tracts.*
+
+**Answer:  See code and output below.**
+
+```{r}
+# Load datasets
+d1 <- readRDS( "data/rodeo/LTDB-2000.rds" )
+d2 <- readRDS( "data/rodeo/LTDB-2010.rds" )
+md <- readRDS( "data/rodeo/LTDB-META-DATA.rds" )
+
+d1 <- select( d1, - year )
+d2 <- select( d2, - year )
+
+# Merge datasets
+d <- merge( d1, d2, by="tractid" )
+d <- merge( d, md, by="tractid" )
+
+# Drop all rural census tracts
+d <- filter( d, urban == "urban" )
+
+d.full <- d  # keep a copy so you don't have to reload 
+
+# Peek at new dataset
+head(d)
+```
+
+## *Create a variable that measures the growth of median home value from 2000 to 2010. Omit cases that have a median home value less than $10,000 in 2000. Omit cases with growth rates above 200%.*
+
+**ANSWER:  See code and output below.**
+
+```{r}
+ # adjust 2000 home values for inflation 
+mhv.00 <- d$mhmval00 * 1.28855  
+mhv.10 <- d$mhmval12
+
+# change in MHV in dollars
+mhv.change <- mhv.10 - mhv.00
+
+# drop low 2000 median home values
+# to avoid unrealistic growth rates.
+#
+# tracts with homes that cost less than
+# $10,000 are outliers
+mhv.00[ mhv.00 < 1000 ] <- NA
+
+# change in MHV in percent
+mhv.growth <- 100 * ( mhv.change / mhv.00 )
+
+# drop high growth rate above 200%
+# to avoid unrealistic growth rates.
+#
+# tracts with growth rates that are
+# above 200% are outliers
+mhv.growth[ mhv.growth > 200 ] <- NA
+
+# Add variables into dataset
+d$mhv.00 <- mhv.00
+d$mhv.10 <- mhv.10
+d$mhv.change <- mhv.change
+d$mhv.growth <- mhv.growth 
+
+# Peek at new variables
+peek_at_data <- d %>%
+  select(tractid, mhv.00, mhv.10, mhv.change, mhv.growth)
+
+head(peek_at_data)
+```
+
+# Part 2 - Community Health
+
+## *Reconstruct your three community health scales from Lab 02.*
+
+**NOTE:**  I completely reworked my Lab 02 while working on this lab, as I understand this much more. I chose to keep similar variables and latent constructs even though the cronbach alpha scores were not that high for experimental sake.
+
+My Three Instruments and their Indepedent Variables
+
+* Economic Strength of the Community:
+  + persons with at least a four-year college degree (col)
+  + Median HH Income, Total (hinc)
+  + employed persons 16 years and over (empclf)
+* Vulnerability of the Community, Low-Income Hispanics:
+  + Hispanics in poverty (nhpov)
+  + persons who speak English not well (lep)
+  + persons with high school degree or less (hs)
+* Vulnerability of the Community, Single Female-Lead Homes:
+  + Female-Headed Families with Children (fhh)
+  + Widowed, Divorced and Separated (wds)
+  + females in labor force (flabf)
+
+```{r}
+dMaster <- d  # keep a copy so you don't have to reload 
+```
+
+
+```{r}
+d <- dMaster
+
+# Create subset , keeping only values we want
+d <- select( d, tractid, 
+             hs00, hs12, ag25up00, ag25up12, col00, col12,
+             empclf00, empclf12, hinc00, hinc12, nhpov00,
+             nhpov12, dhpov00, dhpov12, family00, family12,
+             lep00, lep12, fhh00, fhh12, wds00, wds12,
+             flabf00, flabf12, clf00, clf12, ag5up00, ag5up12,
+             "mhv.00", "mhv.10", "mhv.change", "mhv.growth",
+             cbsa, cbsaname )
+
+# Create new variables
+d <- 
+  d %>%
+  mutate( # Below are percent change from 2000 to 2010
+          p.hs.change = 100 * ( hs12 - hs00 ) / (hs00 + 0.01),
+          p.col.change = 100 * ( col12 - col00 ) / (col00 + 0.01),
+          p.emp.change = 100 * ( empclf12 - empclf00 ) / (empclf00 + 0.01),
+          p.hinc.change = 100 * ( hinc12 - hinc00 ) / (hinc00 + 0.01),
+          p.hisp.pov.change = 100 * ( nhpov12 - nhpov00 ) / ( nhpov00 + 0.01 ),
+          p.lep.change = 100 * ( lep12 - lep00 ) / (lep00 + 0.01),
+          p.fhh.change = 100 * ( fhh12 - fhh00 ) / (fhh00 + 0.01),
+          p.wds.change = 100 * ( wds12 - wds00 ) / (wds00 + 0.01),
+          p.flabf.change = 100 * ( flabf12 - flabf00 ) / (flabf00 + 0.01),
+          # Below is the percent within a population
+          hs.rate00 = 100 * ( hs00 / ( ag25up00 + 0.01 )),
+          col.rate00 = 100 * ( col00 / ( ag25up00 + 0.01 )),
+          emp.rate00 = 100 * ( empclf00 / ( clf00 + 0.01 )),
+          hisp.pov.rate00 = 100 * ( nhpov00 / (dhpov00 + 0.01 )),
+          lep.rate00 = 100 * ( lep00 / ( ag5up00 + 0.01 )),
+          fhh.rate00 = 100 * ( fhh00 / ( family00 + 0.01 )),
+          wds.rate00 = 100 * ( wds00 / ( ag25up00 + 0.01 )),
+          flabf.rate00 = 100 * ( flabf00 / (clf00 + 0.01 ))
+          )
+
+# Remove outliers that came from dividing a large number by 0.01
+d[which(d$p.hs.change %in% boxplot(d$p.hs.change, plot=FALSE)$out), "p.hs.change"] <- NA
+d[which(d$p.col.change %in% boxplot(d$p.col.change, plot=FALSE)$out),"p.col.change"] <- NA
+d[which(d$p.emp.change %in% boxplot(d$p.emp.change, plot=FALSE)$out),"p.emp.change"] <- NA
+d[which(d$p.hinc.change %in% boxplot(d$p.hinc.change, plot=FALSE)$out),"p.hinc.change"] <- NA
+d[which(d$p.hisp.pov.change %in% boxplot(d$p.hisp.pov.change, plot=FALSE)$out),"p.hisp.pov.change"] <- NA
+d[which(d$p.lep.change %in% boxplot(d$p.lep.change, plot=FALSE)$out),"p.lep.change"] <- NA
+d[which(d$p.fhh.change %in% boxplot(d$p.fhh.change, plot=FALSE)$out),"p.fhh.change"] <- NA
+d[which(d$p.wds.change %in% boxplot(d$p.wds.change, plot=FALSE)$out),"p.wds.change"] <- NA
+d[which(d$p.flabf.change %in% boxplot(d$p.flabf.change, plot=FALSE)$out),"p.flabf.change"] <- NA
+d[which(d$hs.rate00 %in% boxplot(d$hs.rate00, plot=FALSE)$out),"hs.rate00"] <- NA
+d[which(d$col.rate00 %in% boxplot(d$col.rate00, plot=FALSE)$out),"col.rate00"] <- NA
+d[which(d$emp.rate00 %in% boxplot(d$emp.rate00, plot=FALSE)$out),"emp.rate00"] <- NA
+d[which(d$hisp.pov.rate00 %in% boxplot(d$hisp.pov.rate00, plot=FALSE)$out),"hisp.pov.rate00"] <- NA
+d[which(d$lep.rate00 %in% boxplot(d$lep.rate00, plot=FALSE)$out),"lep.rate00"] <- NA
+d[which(d$fhh.rate00 %in% boxplot(d$fhh.rate00, plot=FALSE)$out),"fhh.rate00"] <- NA
+d[which(d$wds.rate00 %in% boxplot(d$wds.rate00, plot=FALSE)$out),"wds.rate00"] <- NA
+d[which(d$flabf.rate00 %in% boxplot(d$flabf.rate00, plot=FALSE)$out),"flabf.rate00"] <- NA
+
+# Round the entire dataset to 2 digits
+is.num <- sapply(d, is.numeric)
+d[is.num] <- lapply(d[is.num], round, 2)
+
+head(d)
+
+```
+
+## *Run three bivariate regressions predicting MHV growth with each community health metric, and one regression with all three metrics together.*
+
+### Instrument 1: Economic Strength of the Community
+
+**Summary**
+
+```{r, results="asis"}
+df1 <- data.frame(HHIncome.00=d$hinc00, 
+                  Employment.Rate.00=d$emp.rate00, 
+                  College.Rate.00=d$col.rate00,
+                  MHV.Growth=d$mhv.growth)
+
+stargazer( df1, 
+           type=s.type, 
+           digits=0, 
+           summary.stat = c("min", "p25","median","mean","p75","max") )
+```
+
+**Cronbach's Alpha Score**
+
+```{r}
+a1 <- psych::alpha( df1, check.keys=TRUE )$total$std.alpha
+a1
+```
+
+**Correlation Plot**
+
+```{r}
+pairs( df1, lower.panel=panel.smooth, upper.panel=panel.cor )
+```
+
+**Regression Analysis**
+
+```{r, results="asis"}
+m1 <- lm( MHV.Growth ~ HHIncome.00 + Employment.Rate.00 + College.Rate.00, data=df1)
+
+stargazer( m1, 
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f") )
+```
+
+
+
+### Instrument 2: Vulnerability of the Community, Low-Income Hispanics
+
+**Summary**
+
+```{r, results="asis"}
+df2 <- data.frame(Hisp.Pov.Rate.00=d$hisp.pov.rate00, 
+                  Low.English.Rate.00=d$lep.rate00, 
+                  High.School.Rate.00=d$hs.rate00,
+                  MHV.Growth=d$mhv.growth)
+
+stargazer( df2, 
+           type=s.type, 
+           digits=0, 
+           summary.stat = c("min", "p25","median","mean","p75","max") )
+```
+
+**Cronbach's Alpha Score**
+
+```{r}
+a2 <- psych::alpha( df2, check.keys=TRUE )$total$std.alpha
+a2
+```
+
+**Correlation Plot**
+
+```{r}
+pairs( df2, lower.panel=panel.smooth, upper.panel=panel.cor )
+```
+
+**Regression Analysis**
+
+```{r, results="asis"}
+m2 <- lm( MHV.Growth ~ Hisp.Pov.Rate.00 + Low.English.Rate.00 + High.School.Rate.00, data=df2)
+
+stargazer( m2, 
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f") )
+```
+
+### Instrument 3: Vulnerability of the Community, Single Working Females with Children
+
+**Summary**
+
+```{r, results="asis"}
+df3 <- data.frame(FemaleHeadofHouse.Rate.00=d$fhh.rate00, 
+                  Wid.Div.Sep.Rate.00=d$wds.rate00, 
+                  Female.Labor.Rate.00=d$flabf.rate00,
+                  MHV.Growth=d$mhv.growth)
+
+stargazer( df3, 
+           type=s.type, 
+           digits=0, 
+           summary.stat = c("min", "p25","median","mean","p75","max") )
+```
+
+**Cronbach's Alpha Score**
+
+```{r}
+a3 <- psych::alpha( df3, check.keys=TRUE )$total$std.alpha
+a3
+```
+
+**Correlation Plot**
+
+```{r}
+pairs( df3, lower.panel=panel.smooth, upper.panel=panel.cor )
+```
+
+**Regression Analysis**
+
+```{r, results="asis"}
+m3 <- lm( MHV.Growth ~ FemaleHeadofHouse.Rate.00 + Wid.Div.Sep.Rate.00 + Female.Labor.Rate.00, data=df3)
+
+stargazer( m3, 
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f") )
+```
+
+### All Three Metrics Together
+
+**Regression Analysis**
+
+```{r, results="asis"}
+df4 <- data.frame(HHIncome.00=d$hinc00, 
+                  Employment.Rate.00=d$emp.rate00, 
+                  College.Rate.00=d$col.rate00,
+                  Hisp.Pov.Rate.00=d$hisp.pov.rate00, 
+                  Low.English.Rate.00=d$lep.rate00, 
+                  High.School.Rate.00=d$hs.rate00,
+                  FemaleHeadofHouse.Rate.00=d$fhh.rate00, 
+                  Wid.Div.Sep.Rate.00=d$wds.rate00, 
+                  Female.Labor.Rate.00=d$flabf.rate00,
+                  MHV.Growth=d$mhv.growth)
+
+m4 <- lm( MHV.Growth ~ HHIncome.00 + Employment.Rate.00 + College.Rate.00 + Hisp.Pov.Rate.00 + Low.English.Rate.00 + High.School.Rate.00 + FemaleHeadofHouse.Rate.00 + Wid.Div.Sep.Rate.00 + Female.Labor.Rate.00, data=df4)
+
+stargazer( m4, 
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f") )
+```
+
+## *Which metric, if any, best predicts change in home value? Does this fit with your expectations?*
+
+**ANSWER:  Based on my three metrics, which were originally chosen to measure a latent construct within tracts and not MHV Growth, the best metric to measure MHV growth would be metric #1: Economic Strength of the Community. This is for two reasons. When looking at the regression model of just that metric, two of the three variables showed a high correlation with p values < 0.01 and with small standard errors. The second reason, is when looking at the complete model with all nine variables, we see that the three variables from metric #1 showed the highest results over the other six variables. Though it is interesting that in these models, we see a negative correlation in certain variables where I would have expected a positive correlation. For example, emplyment rate is negative, implying that the lower the employment rate is in 2000, the higher the MHV Growth will be in ten years.**
+
+# Part 3 - Predict MHV Change
+
+## Now select at least three census variables that you feel will be good predictors of change in MHV between 2000 and 2010.
+
+**ANSWER:  The variables I chose to predict Median Home Value Growth over the next ten years are: Unemployment Rate, Low English Rate, Female Labor Rate.**
+
+### Load and Clean Data
+
+```{r}
+d_predict <- dMaster
+
+# Create subset, keeping only values we want
+d_predict <- select( d_predict, tractid, unemp12, unemp00,
+             lep00, lep12, fhh00, fhh12,
+             flabf00, flabf12, clf00, ag5up00,
+             "mhv.00", "mhv.10", "mhv.change", "mhv.growth",
+             cbsa, cbsaname )
+
+# Create new variables
+d_predict <- 
+  d_predict %>%
+  mutate( # Below are percent change from 2000 to 2010
+          p.unemp.change = 100 * ( unemp12 - unemp00 ) / (unemp00 + 0.01),
+          p.lep.change = 100 * ( lep12 - lep00 ) / (lep00 + 0.01),
+          p.flabf.change = 100 * ( flabf12 - flabf00 ) / (flabf00 + 0.01),
+          # Below is the percent within a population
+          unemp.rate00 = 100 * ( unemp00 / ( clf00 + 0.01 )),
+          lep.rate00 = 100 * ( lep00 / ( ag5up00 + 0.01 )),
+          flabf.rate00 = 100 * ( flabf00 / (clf00 + 0.01 ))
+          )
+
+# Remove outliers that came from dividing a large number by 0.01
+d_predict[which(d_predict$p.unemp.change %in% boxplot(d_predict$p.unemp.change, plot=FALSE)$out), "p.unemp.change"] <- NA
+d_predict[which(d_predict$p.lep.change %in% boxplot(d_predict$p.lep.change, plot=FALSE)$out),"p.lep.change"] <- NA
+d_predict[which(d_predict$p.flabf.change %in% boxplot(d_predict$p.flabf.change, plot=FALSE)$out),"p.flabf.change"] <- NA
+d_predict[which(d_predict$unemp.rate00 %in% boxplot(d_predict$unemp.rate00, plot=FALSE)$out),"unemp.rate00"] <- NA
+d_predict[which(d_predict$lep.rate00 %in% boxplot(d_predict$lep.rate00, plot=FALSE)$out),"lep.rate00"] <- NA
+d_predict[which(d_predict$flabf.rate00 %in% boxplot(d_predict$flabf.rate00, plot=FALSE)$out),"flabf.rate00"] <- NA
+
+# Round the entire dataset to 2 digits
+is.num <- sapply(d_predict, is.numeric)
+d_predict[is.num] <- lapply(d_predict[is.num], round, 2)
+
+head(d_predict)
+
+```
+
+### Create a metro-wide variable for MHV change and growth
+
+```{r}
+# average growth in median home value for the city
+d_predict <- 
+  d_predict %>%
+  group_by( cbsaname ) %>%
+  mutate( metro.mhv.change = median( mhv.change, na.rm=T ),
+             metro.mhv.growth = 100 * median( mhv.growth, na.rm=T ) ) %>%
+  ungroup() 
+```
+
+### Peek at variable's Histograms for Skews
+
+**We see below that both Unemployment Rate and Low Enlgish Rate have skewed data.**
+
+```{r}
+par( mfrow=c(1,2) )
+
+hist( d_predict$unemp.rate00, breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Unemployment Rate")
+hist( log(d_predict$unemp.rate00+1), breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Unemployment Rate (logged)")
+```
+
+```{r}
+par( mfrow=c(1,2) )
+
+hist( d_predict$lep.rate00, breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Low English Rate")
+hist( log(d_predict$lep.rate00+1), breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Low English Rate (logged)")
+```
+
+```{r}
+par( mfrow=c(1,2) )
+
+hist( d_predict$flabf.rate00, breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Female Labor Rate")
+hist( log(d_predict$flabf.rate00+1), breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Female Labor Rate (logged)")
+```
+
+### Fix Skewed Data
+
+```{r}
+d_predict$unemp.rate00 <- log10( d_predict$unemp.rate00 + 1)
+d_predict$lep.rate00 <- log10( d_predict$lep.rate00 + 1)
+```
+
+### Check for Multicollinarity
+
+**ANSWER:  Looking at the regression analysis below, there is just s slight increase in R-square, while there is a slight decrease to SER. Only one of the three standard errors went up. Only one Coefficient got smaller, while the other two got bigger. This all indicates the the model does get "better" and there is no multicollinarity.**
+
+```{r, results="asis"}
+m1 <- lm( mhv.growth ~  unemp.rate00, data=d_predict )
+m2 <- lm( mhv.growth ~  lep.rate00, data=d_predict )
+m3 <- lm( mhv.growth ~  flabf.rate00, data=d_predict )
+m4 <- lm( mhv.growth ~ unemp.rate00 + lep.rate00 + flabf.rate00, data=d_predict )
+
+
+stargazer( m1, m2, m3, m4,
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f") )
+```
+
+**Summary**
+
+```{r}
+d_predict_edit <- select(d_predict, mhv.growth, unemp.rate00, lep.rate00, flabf.rate00)
+
+summary(d_predict_edit)
+```
+
+**Cronbach's Alpha Score**
+
+```{r}
+a_chosen_var <- psych::alpha( d_predict_edit, check.keys=TRUE )$total$std.alpha
+a_chosen_var
+```
+
+**Correlation Plot**
+
+```{r}
+pairs( d_predict_edit, lower.panel=panel.smooth, upper.panel=panel.cor )
+```
+
+## Looking at Data as Metro Groups
+
+### First, let's look at **Unemployment Rate** and it's effect on MHV Growth within three random cities.
+
+**Scatterplot, choosing three random cities**
+
+```{r}
+d_grouped <- filter( d_predict, cbsaname %in% 
+               c("Tyler, TX",
+                 "Youngstown-Warren-Boardman, OH-PA",
+                 "Syracuse, NY") )
+
+m <- lm( mhv.growth ~ factor(cbsaname) + unemp.rate00 - 1, data=d_grouped )
+
+b0.syracuse   <- m$coefficients[1] 
+b0.tyler      <- m$coefficients[2] 
+b0.youngston  <- m$coefficients[3] 
+b1            <- m$coefficients[4] 
+
+palette( c( "steelblue", "green3", "darkorange"  ) )
+palette( adjustcolor( palette(), alpha.f = 0.3 ) )
+
+plot( d_grouped$unemp.rate00, d_grouped$mhv.growth,
+        pch=19, cex=1.5, bty = "n",  
+        col=factor(d_grouped$cbsa),
+      ylim=c(-50,50),
+      xlab="Unemployment Rate (logged)",
+      ylab="Median Home Value Growth 2000-2010")
+          
+abline( b0.syracuse, b1, col="steelblue", lwd=3 )
+abline( b0.tyler, b1, col="green3", lwd=3 )
+abline( b0.youngston, b1, col="darkorange", lwd=3 )
+```
+
+**Regression Analysis for the Effects of Unemployment Rate on MHV Growth by City.**
+
+```{r, results="asis"}
+m1 <- lm( mhv.growth ~ unemp.rate00 + cbsa, data=d_grouped )
+
+stargazer( m1,
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f"),
+           omit="cbsa" )
+```
+
+### Second, let's look at **Low English Speaking People** and it's effect on MHV Growth within three random cities.
+
+**Scatterplot, choosing three random cities**
+
+```{r}
+d_grouped <- filter( d_predict, cbsaname %in% 
+               c("Tyler, TX",
+                 "Youngstown-Warren-Boardman, OH-PA",
+                 "Syracuse, NY") )
+
+m <- lm( mhv.growth ~ factor(cbsaname) + lep.rate00 - 1, data=d_grouped )
+
+b0.syracuse   <- m$coefficients[1] 
+b0.tyler      <- m$coefficients[2] 
+b0.youngston  <- m$coefficients[3] 
+b1            <- m$coefficients[4] 
+
+palette( c( "steelblue", "green3", "darkorange"  ) )
+palette( adjustcolor( palette(), alpha.f = 0.3 ) )
+
+plot( d_grouped$lep.rate00, d_grouped$mhv.growth,
+        pch=19, cex=1.5, bty = "n",  
+        col=factor(d_grouped$cbsa),
+      ylim=c(-50,50),
+      xlab="Low English Speaking (logged)",
+      ylab="Median Home Value Growth 2000-2010")
+          
+abline( b0.syracuse, b1, col="steelblue", lwd=3 )
+abline( b0.tyler, b1, col="green3", lwd=3 )
+abline( b0.youngston, b1, col="darkorange", lwd=3 )
+```
+
+**Regression Analysis for the Effects of Unemployment Rate on MHV Growth by City.**
+
+```{r, results="asis"}
+m2 <- lm( mhv.growth ~ lep.rate00 + cbsa, data=d_grouped )
+
+stargazer( m2,
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f"),
+           omit="cbsa" )
+```
+
+### Third, let's look at **Female Labor Force** and it's effect on MHV Growth within three random cities.
+
+**Scatterplot, choosing three random cities**
+
+```{r}
+d_grouped <- filter( d_predict, cbsaname %in% 
+               c("Tyler, TX",
+                 "Youngstown-Warren-Boardman, OH-PA",
+                 "Syracuse, NY") )
+
+m <- lm( mhv.growth ~ factor(cbsaname) + flabf.rate00 - 1, data=d_grouped )
+
+b0.syracuse   <- m$coefficients[1] 
+b0.tyler      <- m$coefficients[2] 
+b0.youngston  <- m$coefficients[3] 
+b1            <- m$coefficients[4] 
+
+palette( c( "steelblue", "green3", "darkorange"  ) )
+palette( adjustcolor( palette(), alpha.f = 0.3 ) )
+
+plot( d_grouped$flabf.rate00, d_grouped$mhv.growth,
+        pch=19, cex=1.5, bty = "n",  
+        col=factor(d_grouped$cbsa),
+      ylim=c(-50,50),
+      xlab="Female Labor Force",
+      ylab="Median Home Value Growth 2000-2010")
+          
+abline( b0.syracuse, b1, col="steelblue", lwd=3 )
+abline( b0.tyler, b1, col="green3", lwd=3 )
+abline( b0.youngston, b1, col="darkorange", lwd=3 )
+```
+
+**Regression Analysis for the Effects of Female Labor Force on MHV Growth by City.**
+
+```{r, results="asis"}
+m3 <- lm( mhv.growth ~ flabf.rate00 + cbsa, data=d_grouped )
+
+stargazer( m3,
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f"),
+           omit="cbsa" )
+```
+
+### Finally, let's run a Regression Analysis using all three variables by city
+
+```{r, results="asis"}
+m4 <- lm( mhv.growth ~ unemp.rate00 + lep.rate00 + flabf.rate00 + cbsa, data=d_grouped )
+
+stargazer( m4,
+           type=s.type, digits=2,
+           omit.stat = c("rsq","f"),
+           omit="cbsa" )
+```
+
+## Results
+
+Having chosen three variables that show little to no correlation to each other, they were used to measure Median Home Value Growth between the years 2000 and 2010. Those variables chosen were Unemployment, Low English Speaking People, and Female Labor Force. Measuring at the metro-level, we can see that all three variables hold a statistically significant negative impact on MHV Growth as the variable rises when looking at the Bivariate Regression of only that variable. When combining all three variables, we see that they still all hold a negative impact but all three impacts are decreased in their impact, especially Female Labor Force. To sumamrize, these analysis indicate that cities with high unemployment, many low English speaking people, and a high female labor force have great potentional for the Median Home Value to grow.

@@ -1,0 +1,174 @@
+---
+title: "Lab-02-Gentry"
+author: "Katie Gentry"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+---
+
+## Load packages and data needed to complete analysis
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(plyr)
+library(psy)
+library(standardize)
+library(corrplot)
+library(here)
+library(readr)
+library(tidyverse)
+library(corrr)
+```
+
+```{r}
+ltdb_std_2000_sample <- read_csv("~/R/win-library/analytic_project/cpp-528-spr-2020-group-01/data/raw/ltdb_std_2000_sample.csv") %>%
+    rename_all(str_to_lower)
+
+ltdb_std_2000_fullcount <- read_csv("~/R/win-library/analytic_project/cpp-528-spr-2020-group-01/data/raw/ltdb_std_2000_fullcount.csv") %>% 
+    rename_all(str_to_lower)
+```
+
+## Inspect data
+
+```{r}
+View(ltdb_std_2000_sample)
+View(ltdb_std_2000_fullcount)
+```
+
+## Filter data to only Maricopa County, AZ
+
+Also:
+
+* Remove records with `NA` values (from 916 tracts to 734)
+* Create a few new columns
+
+```{r, echo = F}
+std_2000_maricopa <- 
+  ltdb_std_2000_sample %>%
+  # limit to Maricopa County (relevant tracts)
+  filter(state == "AZ" & county == "Maricopa County") %>%
+  # create columns based on percentages
+  # note: double check that these denominators match those in the LTDB code book
+  mutate(perc_col00 = col00 / ag25up00,
+         perc_olang00 = olang00 / ag5up00,
+         perc_noeng00 = lep00 / ag5up00,
+         perc_pov00 = npov00 / dpov00,
+         perc_30yrhouse00 = h30old00 / hu00sp,
+         perc_dis00 = dis00 / cni16u00,
+         perc_65pov00 = n65pov00 / pop00sf3,
+         perc_prof00 <- PROF00 / EMPCLF00,
+         perc_10yrless00 <- H10YRS00 / OHU00SP,
+         perc_unemp00 <- UNEMP00 / CLF00,
+         percapinc00 <- INCPC00,
+         perc_marr00 <- `Mar-00` / AG15UP00,
+         perc_selfemp00 <- SEMP00 / EMPCLF00)
+
+# get dimensions
+dim(std_2000_maricopa)
+
+# remove NA values
+std_2000_maricopa_clean <- na.omit(std_2000_maricopa)
+
+# get dimensions
+dim(std_2000_maricopa_clean)
+```
+
+## Create a correlation matrix
+
+```{r}
+corr_maricopa_clean <-
+  std_2000_maricopa_clean %>%
+  # remove name (character) columns except one
+  select(-c(trtid10, state, 
+           county, placefp10,
+           cbsa10, metdiv10)) %>%
+  # transform that last name column to rownames
+  # note: that way, all columns are continous variables
+  column_to_rownames(var = "tract") %>%
+  # create correlation data frame
+  correlate()
+```
+
+## Plot a correlation data frame
+
+```{r}
+corr_maricopa_clean %>%
+  # Re-arrange a correlation data frame to group highly correlated variables closer together.
+  rearrange(absolute = FALSE) %>%
+  # Convert the upper or lower triangle of a correlation data frame (cor_df) to missing values
+  shave() %>%
+  # plot
+  rplot() +
+  # style the plot
+  labs(title="Correlation plot",
+       caption="Source: LTDB std 2000 sample") +
+  theme(axis.text.x = element_text(angle = 45)) +
+  ggsave("corr_plot.png",
+         dpi = 300,
+         width = 12,
+         height = 12,
+         units = "in")
+```
+
+## Standardize the units of each variable into a z-score
+
+For more details, see this [tutorial](http://mattwaite.github.io/sports/z-scores.html).
+
+```{r}
+std_2000_maricopa_clean_standardized <-
+  std_2000_maricopa_clean %>%
+  # remove name (character) columns except one
+  select(-c(trtid10, state, 
+           county, placefp10,
+           cbsa10, metdiv10)) %>%
+  # for all non "tract" columns, scale the values 
+  mutate_at(vars(-tract),
+            function(i) as.numeric(base::scale(i)))
+```
+
+## Create an instrument and evaluate it
+
+```{r}
+# limit instrument to three variables
+maricopa.strength <-
+  std_2000_maricopa_clean_standardized %>%
+  select(mhmval00, hinc00, perc_col00)
+
+# evalutate the instrument
+cronbach(maricopa.strength)
+```
+
+**The Maricopa Strength instrument evaluates the alignment between Home Value, Household Income, and Percent of Individuals that have a 4 year degree or more showing strong economic stability. The Cronbach Alpha score is 0.92.**
+
+```{r}
+# limit instrument to three variables
+maricopa.vulnerable <-
+  std_2000_maricopa_clean_standardized %>%
+  select(perc_pov00, perc_olang00, perc_noeng00)
+
+# evalutate the instrument
+cronbach(maricopa.vulnerable)
+```
+
+**The Maricopa Vulnerable instrument evaluates the alignment between Poverty, other languages spoken in the home, and poor English above the age of five showing significant vulnerability amongst this population. The Cronbach Alpha score is 0.95.**
+
+```{r}
+# limit instrument to three variables
+maricopa.disability <-
+  std_2000_maricopa_clean_standardized %>%
+  select(perc_pov00, perc_dis00, perc_30yrhouse00)
+
+# evalutate the instrument
+cronbach(maricopa.disability)
+```
+
+**The Maricopa Disability instrument evaluates the alignment between poverty, disability, and living in a structure more than 30 years old representing a high vulnerability due to limited income streams and living in an aging place. The Cronbach Alpha score is 0.81.**
+
+```{r}
+summary(std_2000_maricopa_clean)
+```

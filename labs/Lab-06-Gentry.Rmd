@@ -1,0 +1,440 @@
+---
+title: "Lab-06-Gentry"
+author: "Katie Gentry"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=TRUE, message=FALSE, warning=FALSE, fig.width=10 )
+```
+
+# Libraries
+
+```{r}
+library( dplyr )
+library( knitr )
+library( pander )
+library( stargazer )
+library( scales )
+library( ggplot2 )
+library( gridExtra )
+library( here )
+
+set.seed( 1234 )
+```
+
+# Add Federal Program Data to Model
+
+## Load and Merge Datasets
+
+```{r}
+# Load datasets
+data.2000 <- readRDS( here("data/rodeo/LTDB-2000.rds" ))
+data.2010 <- readRDS( here("data/rodeo/LTDB-2010.rds" ))
+md <- readRDS( here("data/rodeo/LTDB-META-DATA.rds" ))
+
+data.2000 <- select( data.2000, - year )
+data.2010 <- select( data.2010, - year )
+
+# Merge datasets
+d <- merge( data.2000, data.2010, by="tractid" )
+censusdata <- merge( d, md, by="tractid" )
+```
+
+## Add Federal Data
+
+```{r}
+URL1 <- "https://raw.githubusercontent.com/DS4PS/cpp-528-spr-2020/master/labs/data/raw/NMTC/nmtc-sheet-01.csv"
+nmtc <- read.csv( URL1, stringsAsFactors=F )
+```
+
+```{r}
+URL <- "https://raw.githubusercontent.com/DS4PS/cpp-528-spr-2020/master/labs/data/raw/LIHTC/LIHTCPUB.csv"
+lihtc <- read.csv( URL, stringsAsFactors=F )
+```
+
+## Clean Up Census Data
+
+```{r}
+# remove anything not a number from the string
+censusdata$id2 <- gsub( "[^0-9]", "", censusdata$tractid )
+head( censusdata$id2 )
+```
+
+```{r}
+# check NMTC census tract IDs
+
+length( unique( nmtc$X2010.Census.Tract ) )
+```
+
+```{r}
+length( intersect( nmtc$X2010.Census.Tract, censusdata$id2 ) )
+```
+
+```{r}
+# fix IDs so they are match
+censusdata$id2 <- as.numeric( censusdata$id2 )
+
+length( intersect( nmtc$X2010.Census.Tract, censusdata$id2 ) )
+```
+
+```{r}
+# all but 13 of projects have a matched census tract 
+
+# check LIHTC census tract IDs
+
+length( unique( lihtc$fips2010 ) )
+```
+
+```{r}
+length( intersect( lihtc$fips2010, censusdata$id2 ) )
+```
+
+## We must aggregate data in order to merge data sets
+
+```{r}
+lihtc.dollars <-
+  lihtc %>% 
+  filter( yr_alloc >= 2000 & yr_alloc <= 2010 ) %>%
+  group_by( fips2010 ) %>%
+  summarize( num.lihtc = n(), lihtc.total = sum( allocamt, na.rm=T ) )
+
+head( lihtc.dollars )
+```
+
+```{r}
+# need to convert from currency to numeric
+# current format: 
+# head( nmtc$QLICI.Amount )
+# [1] "$300,000.00 "   "$1,008,750.00 " "$977,000.00 "
+
+# remove dollar sign and commas
+nmtc$amount <- gsub( "[,$]", "", nmtc$QLICI.Amount )
+
+# head(  nmtc$amount  )
+# "300000.00 "  "1008750.00 " "977000.00 "
+
+# convert characters to numeric 
+nmtc$amount <- as.numeric( nmtc$amount ) %>% round(0)
+
+# head(  nmtc$amount  )
+# [1]  300000 1008750  977000
+
+nmtc.dollars <- 
+  nmtc %>% 
+  filter( Origination.Year >= 2000 & Origination.Year <= 2010 ) %>%
+  group_by( X2010.Census.Tract ) %>% 
+  summarize( num.nmtc=n(), nmtc.total = sum( amount, na.rm=T ) )
+
+head( nmtc.dollars )
+```
+
+## Merge Census data and Tax Policy data
+
+```{r}
+d <- merge( censusdata, nmtc.dollars, by.x="id2", by.y="X2010.Census.Tract", all.x=T )
+d <- merge( d, lihtc.dollars, by.x="id2", by.y="fips2010", all.x=T )
+
+# recode tracts that had no grants from NA to 0
+
+d$num.nmtc[ is.na(d$num.nmtc) ] <- 0
+d$nmtc.total[ is.na(d$nmtc.total) ] <- 0
+
+d$num.lihtc[ is.na(d$num.lihtc) ] <- 0 
+d$lihtc.total[ is.na(d$lihtc.total) ] <- 0
+```
+
+## Remove rural districts
+
+```{r}
+table( d$urban.x )
+```
+
+```{r}
+# filter to just urban districts
+d <- filter( d, urban.x == "urban" )
+```
+
+```{r}
+#determine lihtc assistance tracts
+sum( d$num.lihtc > 0 )
+```
+
+```{r}
+#determine nmtc assistance tracts
+sum( d$num.nmtc > 0 )
+```
+
+```{r}
+#determine lihtc and nmtc tracts
+sum( d$num.lihtc > 0 & d$nmtc > 0 ) 
+```
+
+## Create New Variables
+
+```{r}
+# pro tip when getting started
+# and exploring a lot of variables
+# while making changes to your dataset:
+
+d.full <- d  
+```
+
+```{r}
+d <- d.full 
+
+# adjust 2000 home values for inflation 
+mhv.00 <- d$mhmval00 * 1.28855  
+mhv.10 <- d$mhmval12
+
+# change in MHV in dollars
+mhv.change <- mhv.10 - mhv.00
+
+
+# drop low 2000 median home values
+# to avoid unrealistic growth rates.
+#
+# tracts with homes that cost less than
+# $10,000 are outliers
+# approximately 200 out of 59,000 cases 
+sum( mhv.00 < 10000 ) 
+mhv.00[ mhv.00 < 10000 ] <- NA
+
+# change in MHV in percent
+mhv.growth <- 100 * ( mhv.change / mhv.00 )
+summary( mhv.growth )
+```
+```{r}
+head(d)
+```
+
+
+```{r}
+d$mhv.00 <- mhv.00
+d$mhv.10 <- mhv.10
+d$mhv.change <- mhv.change
+d$mhv.growth <- mhv.growth 
+
+
+
+d <- select( d, 
+             
+             tractid, cbsa.x, cbsaname.x,            # ids / units of analysis
+             
+             mhv.00, mhv.10, mhv.change, mhv.growth,    # home value 
+             
+             hinc00, hu00, own00, rent00,        # ses
+             hinc12, hu10, own10, rent10, 
+             
+             empclf00, clf00, unemp00, prof00, semp00,  # employment 
+             empclf12, clf12, unemp12, prof12, semp12,
+             
+             dpov00, npov00,                     # poverty
+             dpov12, npov12,
+             
+             ag25up00, hs00, col00,              # education 
+             ag25up12, hs12, col12,
+             
+             pop00.x, nhwht00, nhblk00, hisp00, asian00,   # race
+             pop10, nhwht10, nhblk10, hisp10, asian10,
+             
+             num.nmtc, nmtc.total,              # tax policy data
+             num.lihtc, lihtc.total             # aggregated by census tract
+             
+          ) # end select
+
+d <- 
+  d %>%
+  mutate( 
+          # 2000 variables
+          p.white.00 = 100 * nhwht00 / pop00.x,
+          p.black.00 = 100 * nhblk00 / pop00.x,
+          p.hisp.00 = 100 * hisp00 / pop00.x, 
+          p.asian.00 = 100 * asian00 / pop00.x,
+          p.hs.edu.00 = 100 * (hs00+col00) / ag25up00,
+          p.col.edu.00 = 100 * col00 / ag25up00,
+          p.prof.00 = 100 * prof00 / empclf00,
+          p.unemp.00 = 100 * unemp00 / clf00,
+          pov.rate.00 = 100 * npov00 / dpov00,
+          p.selfemp.00 = 100 * semp00 / empclf00,
+          
+          # 2010 variables
+          p.white.10 = 100 * nhwht10 / pop10,
+          p.black.10 = 100 * nhblk10 / pop10,
+          p.hisp.10 = 100 * hisp10 / pop10, 
+          p.asian.10 = 100 * asian10 / pop10,
+          p.hs.edu.10 = 100 * (hs12+col12) / ag25up12,
+          p.col.edu.10 = 100 * col12 / ag25up12,
+          p.prof.10 = 100 * prof12 / empclf12,
+          p.unemp.10 = 100 * unemp12 / clf12,
+          pov.rate.10 = 100 * npov12 / dpov12,
+          p.selfemp.10 = 100 * semp12 / empclf12)
+
+# inflation adjust income 
+d$hinc00 <- 1.28855 * d$hinc00
+
+d <-
+  d %>%
+  group_by( cbsaname.x ) %>%
+  mutate( # metro rank of home value in 2000
+          metro.mhv.pct.00 = ntile( mhv.00, 100 ),
+          # metro rank of home value in 2010
+          metro.mhv.pct.10 = ntile( mhv.10, 100 ),
+          # median pay for metro area 2000
+          metro.median.pay.00 = median( hinc00, na.rm=T ),
+          # median pay for metro area 2010
+          metro.median.pay.10 = median( hinc12, na.rm=T ),
+          # tract rank in metro area for diversity (% non-white)
+          metro.diversity.rank.00 = ntile( (100-p.white.00), 100 ),
+          # metro total population 2000
+          metro.pop.total.00 = sum( pop00.x, na.rm=T ),
+          # metro total population 2010
+          metro.pop.total.10 = sum( pop10, na.rm=T ) ) %>%
+  ungroup() %>%
+  mutate( # change in relative rank of mhv in metro area 2000-2010
+          metro.mhv.pctile.change = metro.mhv.pct.10 - metro.mhv.pct.00,
+          # growth in ave pay in metro
+          metro.pay.change = metro.median.pay.10 - metro.median.pay.00,
+          # metro population growth 2000-2010
+          metro.pop.growth = ( metro.pop.total.10 - metro.pop.total.00 ) / metro.pop.total.00,
+          # increase in the proportion of whites in tract 
+          increase.p.white = p.white.10 - p.white.00,
+          # increase in the proportion of self-employed in tract 
+          increase.p.selfemp = p.selfemp.10 - p.selfemp.00,
+          # increase in the proportion of unemployed community members in tract 
+          increase.p.unemp = p.unemp.10 - p.unemp.00)
+
+```
+
+## Program Participation
+
+
+```{r}
+# Create a true/false code to determine recipient tracts
+d$LIHTC <- ifelse( d$num.lihtc > 0, "YES", "NO" )
+d$NMTC <- ifelse( d$num.nmtc > 0, "YES", "NO" )
+```
+
+## Compare Plots of Recipient and Non-Recipient Communities
+
+### Self-Employment
+
+```{r}
+plot1 <-
+  ggplot( d, aes(x=p.selfemp.00, fill=NMTC )) +
+  geom_density(alpha=0.4) + 
+  ggtitle("2000 Self-Employed \nComparison of Recipient and \nNon-Recipient Communities")
+
+plot2 <-
+  ggplot( d, aes(x=p.selfemp.00, fill=LIHTC)) +
+  geom_density(alpha=0.4) +
+  ggtitle("2000 Self-Employed \nComparison of Recipient and \nNon-Recipient Communities")
+
+grid.arrange( plot1, plot2, nrow = 1 )
+```
+
+### Unemployment
+
+```{r}
+plot3 <-
+  ggplot( d, aes(x=p.unemp.00, fill=NMTC )) +
+  geom_density(alpha=0.4) + 
+  ggtitle("2000 Unemployment Rate \nComparison of Recipient and \nNon-Recipient Communities")
+
+plot4 <-
+  ggplot( d, aes(x=p.unemp.00, fill=LIHTC)) +
+  geom_density(alpha=0.4) +
+  ggtitle("2000 Unemployement Rate \nComparison of Recipient and \nNon-Recipient Communities")
+
+grid.arrange( plot3, plot4, nrow = 1 )
+```
+
+### Metro Median Pay
+
+```{r}
+plot5 <-
+  ggplot( d, aes(x=metro.median.pay.00, fill=NMTC )) +
+  geom_density(alpha=0.4) + 
+  ggtitle("2000 Metro Median Pay \nComparison of Recipient and \nNon-Recipient Communities")
+
+plot6 <-
+  ggplot( d, aes(x=metro.median.pay.00, fill=LIHTC)) +
+  geom_density(alpha=0.4) +
+  ggtitle("2000 Metro Median Pay \nComparison of Recipient and \nNon-Recipient Communities")
+
+grid.arrange( plot5, plot6, nrow = 1 )
+```
+
+### Home Values
+
+```{r}
+plot7 <- 
+  ggplot( d, aes(x=log10(mhv.00), fill=NMTC )) +
+  geom_density( alpha=0.4 ) +
+  ggtitle("2000 Median Home Value \nComparison of Recipient and \nNon-Recipient Communities")
+
+plot8 <- 
+  ggplot( d, aes(x=log10(mhv.00), fill=LIHTC )) +
+  geom_density( alpha=0.4 )  +
+  ggtitle("2000 Median Home Value \nComparison of Recipient and \nNon-Recipient Communities")
+
+grid.arrange( plot7, plot8, nrow = 1 )
+```
+
+## Evaluating Program Impact by Difference-in-Difference Models:
+
+```{r}
+y1 <- log1p( d$p.selfemp.00 )
+y2 <- log1p( d$p.selfemp.10 )
+treat <- as.numeric( d$num.nmtc > 0 )
+
+d1 <- data.frame( y=y1, treat=treat, post=0 )
+d2 <- data.frame( y=y2, treat=treat, post=1 )
+
+d3 <- rbind( d1, d2 )
+
+m <- lm( y ~ treat + post + treat*post, data=d3 )
+
+summary( m ) 
+```
+
+**For Self-employed individuals, the secular trend was 4.17% loss. The treatment group grew 1.38% more than the baseline group so the programs were minimally effective at catalyzing neighborhood improvement.**
+
+```{r}
+y1 <- log1p( d$p.unemp.00 )
+y2 <- log1p( d$p.unemp.10 )
+treat <- as.numeric( d$num.nmtc > 0 )
+
+d1 <- data.frame( y=y1, treat=treat, post=0 )
+d2 <- data.frame( y=y2, treat=treat, post=1 )
+
+d3 <- rbind( d1, d2 )
+
+m <- lm( y ~ treat + post + treat*post, data=d3 )
+
+summary( m ) 
+```
+
+**For unemployment rate, the secular trend was 49.1% growth. The treatment group was -30.8% lower than the baseline group so the programs were effective at catalyzing neighborhood improvement as there was lower unemployment.**
+
+```{r}
+y1 <- log1p( d$metro.median.pay.00)
+y2 <- log1p( d$metro.median.pay.10)
+treat <- as.numeric( d$num.nmtc > 0 )
+
+d1 <- data.frame( y=y1, treat=treat, post=0 )
+d2 <- data.frame( y=y2, treat=treat, post=1 )
+
+d3 <- rbind( d1, d2 )
+
+m <- lm( y ~ treat + post + treat*post, data=d3 )
+
+summary( m ) 
+```
+
+**For Metro Median Pay, the secular trend was -4.24% loss. The treatment group grew 1.20% more than the baseline group so the programs were minimally effective at catalyzing neighborhood improvement.**

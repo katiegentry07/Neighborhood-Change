@@ -1,0 +1,306 @@
+---
+title: "Lab-05-Gentry"
+author: "Katie Gentry"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+---
+
+## Load packages needed to complete analysis of filtering and cleaning data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library( dplyr )
+library( knitr )
+library( pander )
+library( stargazer )
+library( scales )
+library( here )
+
+set.seed( 1234 )
+```
+
+## Load rodeo data from github website
+
+```{r}
+data.2000 <- readRDS( here("data/rodeo/LTDB-2000.rds" ))
+data.2010 <- readRDS( here("data/rodeo/LTDB-2010.rds" ))
+md <- readRDS( here("data/rodeo/LTDB-META-DATA.rds" ))
+
+data.2000 <- select( data.2000, - year )
+data.2010 <- select( data.2010, - year )
+
+data <- merge( data.2000, data.2010, by="tractid" )
+data <- merge( data, md, by="tractid" )
+```
+
+## Filter the data to only urban districts. 
+
+```{r}
+data <- filter( data, urban.x == "urban" )
+```
+
+```{r}
+# pro tip when getting started
+# and exploring a lot of variables
+# while making changes to your dataset:
+
+data.full <- data  # keep a copy so you don't have to reload 
+```
+
+## Creating New Variables for Analysis
+
+```{r}
+data <- data.full  # reset to the original dataset
+
+data <- select( data, tractid, 
+             mhmval00, mhmval12, 
+             hinc00, hinc12,
+             hu00, vac00, own00, rent00, h30old00, hu00sp, ohu00, h10yrs00, 
+             empclf00, clf00, unemp00, prof00, dis00, semp00,
+             dpov00, npov00, olang00, n65pov00, lep00, 
+             ag25up00, hs00, col00, ag5up00, cni16u00, ag15up00, 
+             pop00.x, nhwht00, nhblk00, hisp00, asian00, mar00, 
+             cbsa.x, cbsaname.x )
+ 
+data <- 
+  data %>%
+  #mutate data to create percentages within the data
+  # create columns based on percentages
+  # note: double check that these denominators match those in the data set
+  mutate( p.white = 100 * nhwht00 / pop00.x,
+          p.black = 100 * nhblk00 / pop00.x,
+          p.hisp = 100 * hisp00 / pop00.x, 
+          p.asian = 100 * asian00 / pop00.x,
+          p.hs = 100 * (hs00+col00) / ag25up00,
+          p.col = 100 * col00 / ag25up00,
+          p.prof = 100 * prof00 / empclf00,
+          p.unemp = 100 * unemp00 / clf00,
+          p.vacant = 100 * vac00 / hu00,
+          mhv.change.00.to.10 = mhmval12 - mhmval00,
+          p.mhv.change = 100 * (mhmval12 - mhmval00) / mhmval00,
+          pov.rate = 100 * npov00 / dpov00, 
+          p.olang = 100 * olang00 / ag5up00,
+          p.noeng = 100 * lep00 / ag5up00,
+          p.30yrhouse = 100 * h30old00 / hu00sp,
+          p.dis = 100 * dis00 / cni16u00,
+          p.65pov = 100 * n65pov00 / pop00.x,
+          p.10yrless = 100 * h10yrs00 / ohu00,
+          p.marr = 100 * mar00 / ag15up00,
+          p.selfemp = 100 * semp00 / empclf00,
+          p.inc.change = 100 * (hinc12 - hinc00) / hinc00)
+
+
+# adjust 2000 home values for inflation 
+mhv.00 <- data$mhmval00 * 1.28855  
+mhv.10 <- data$mhmval12
+
+# change in MHV in dollars
+mhv.change <- mhv.10 - mhv.00
+
+
+# drop low 2000 median home values
+# to avoid unrealistic growth rates.
+#
+# tracts with homes that cost less than
+# $10,000 are outliers
+mhv.00[ mhv.00 < 10000 ] <- NA
+
+# change in MHV in percent
+mhv.growth <- 100 * ( mhv.change / mhv.00 )
+
+# drop median home values that
+# increased more than 200%.
+mhv.growth[mhv.growth > 200] <- NA
+
+data$mhv.00 <- mhv.00
+data$mhv.10 <- mhv.10
+data$mhv.change <- mhv.change
+data$mhv.growth <- mhv.growth 
+```
+
+
+# Construct community health scales
+
+## Standardize the units of each variable
+
+*In order to compare the variables, the units must be standardized to be easily compared. Before standardization, you are comparing apples and oranges. However, standardization allows for a comparison across variables.*
+
+```{r}
+data_clean <-
+  data %>%
+  # remove name (character) columns except one
+  select(-c(cbsa.x, cbsaname.x)) %>%
+  # for all non "tract" columns, scale the values 
+  mutate_at(vars(-tractid),
+            function(i) as.numeric(base::scale(i)))
+```
+
+## Create a community health scale by limiting the variables selected 
+
+```{r}
+# limit instrument to three variables
+strength <-
+  data_clean %>%
+  select(p.selfemp, p.inc.change, p.col)
+```
+*The strength variable indicates a strong neighborhood by showing the percent self-employed, median household income, and percent graduated from college. These variables together when high in a census tract would show economic strength.*
+
+```{r}
+# limit instrument to three variables
+vulnerable <-
+  data_clean %>%
+  select(pov.rate, p.olang, p.noeng)
+```
+*The vulnerable variable indicates a struggling neighborhood by showing the percent in poverty, the percent that speaks another language at home, and the percent that do not speak English well above the age of 5. These variables together when high in a census tract would show high vulnerability.*
+
+```{r}
+# limit instrument to three variables
+disability <-
+  data_clean %>%
+  select(pov.rate, p.dis, p.30yrhouse)
+```
+*The disability variable indicates a vulnerable neighborhood by showing the percent in poverty, the percent with a disability, and the percent living in a structure older than 30 years. These variables together when high indicate a fixed income and overall struggling area.*
+
+## Run a bivariate regression predicting home growth with each community health metric and all three health metrics.
+
+```{r}
+homegrowth <- data$mhv.growth
+
+#compare home value to strength community health metric
+strength.homegrowth <- lm(homegrowth ~ strength$p.selfemp + strength$p.inc.change + strength$p.col,
+                          data_clean)
+
+stargazer( strength.homegrowth, 
+           type = "text", 
+           dep.var.labels = ("Home Growth"),
+           column.labels = c(""),
+           covariate.labels = c("% Self-Employed", "Household Income Increase", "% 4 year degree"),
+           omit.stat = "all", 
+           digits = 2 )
+```
+*The bivariate regression shows that the strength variable correlates with home growth for percent of household income increase, percent self-employment, but not with percent of four-year degree.*
+
+```{r}
+#compare home value to vulnerable community health metric
+vulnerable.homegrowth <- lm(homegrowth ~ vulnerable$pov.rate + vulnerable$p.olang +
+                              vulnerable$p.noeng, data_clean)
+
+stargazer( vulnerable.homegrowth, 
+           type = "text", 
+           dep.var.labels = ("Home Growth"),
+           column.labels = c(""),
+           covariate.labels = c("% Poverty", "% Other Language at Home", "% No English, 5+"),
+           omit.stat = "all", 
+           digits = 2 )
+```
+*The bivariate regression shows that the vulnerable variable correlates home growth in poverty and when another language is spoken at home, but negatively correlates with individuals who don't speak English well who are above the age of 5.*
+
+```{r}
+#compare home value to disability community health metric
+disability.homegrowth <- lm(homegrowth ~ disability$pov.rate + disability$p.dis +
+                              disability$p.30yrhouse, data_clean)
+
+stargazer( disability.homegrowth, 
+           type = "text", 
+           dep.var.labels = ("Home Growth"),
+           column.labels = c(""),
+           covariate.labels = c("% Poverty", "% Disabled", "% Old Structure"),
+           omit.stat = "all", 
+           digits = 2 )
+```
+*The bivariate regression shows that the disability variable correlates strongly with home growth for poverty, disabled, and when the structure is greater than 30 years old.*
+
+
+```{r}
+#compare home value to all community health metrics
+communityhealth.homegrowth <- lm(homegrowth ~ strength$p.selfemp + strength$p.inc.change 
+                                 + strength$p.col + vulnerable$pov.rate + vulnerable$p.olang 
+                                 + vulnerable$p.noeng + disability$p.dis + disability$p.30yrhouse,
+                                 data_clean)
+
+stargazer( communityhealth.homegrowth, 
+           type = "text", 
+           dep.var.labels = ("Home Growth"),
+           column.labels = c(""),
+           covariate.labels = c("% Self-Employed", "Household Income Increase", "% 4 year degree", 
+                                "% Poverty", "% Other Language at Home", "% No English, 5+", 
+                                "% Disabled", "% Old Structure"),
+           omit.stat = "all", 
+           digits = 2 )
+```
+*The greatest metric that predicts an increase in home growth was increase in Household Income which is not surprising.*
+
+## Predict Median Home Value Change
+*Select census variables that are good predictors of change for Median Home Value between 2000 and 2010. Using metro-level data, predict the home value change and determine if those variables align with predictions.*
+
+```{r}
+# average growth in median home value for the city
+data_cbsa <- 
+  data %>%
+  group_by( cbsaname.x ) %>%
+  mutate( metro.mhv.change = median( mhv.change, na.rm=T ),
+             metro.mhv.growth = 100 * median( mhv.growth, na.rm=T ) ) %>%
+  ungroup() 
+```
+
+## Check Data for variable skew
+
+```{r}
+# compare data for % disability
+par( mfrow=c(1,2) )
+
+hist( data_cbsa$p.dis, breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Poverty Rate")
+hist( log(data_cbsa$p.dis +1), breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Poverty Rate (logged)")
+```
+
+```{r}
+# compare data for % income change
+par( mfrow=c(1,2) )
+
+hist( data_cbsa$p.inc.change, breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Poverty Rate")
+hist( log(data_cbsa$p.inc.change +1), breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Poverty Rate (logged)")
+```
+
+```{r}
+# compare data for % vacant
+par( mfrow=c(1,2) )
+
+hist( data_cbsa$p.vacant, breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Poverty Rate")
+hist( log(data_cbsa$p.vacant +1), breaks=50, col="gray20", border="white",
+      yaxt="n", xlab="", ylab="", main="Poverty Rate (logged)")
+```
+
+```{r}
+log.p.inc.change <- log10 (data_cbsa$p.inc.change + 1)
+log.p.dis <- log10 (data_cbsa$p.dis + 1)
+log.p.vacant <- log10 (data_cbsa$p.vacant + 1)
+```
+
+```{r}
+#compare home value to all community health metrics
+homechange.metro <- lm(homegrowth ~ metro.mhv.change +
+                       + log.p.dis + log.p.inc.change + log.p.vacant, data_cbsa)
+
+stargazer( homechange.metro, 
+           type = "text", 
+           dep.var.labels = ("Median Home Value Change"),
+           column.labels = c(""),
+           covariate.labels = c("Metro MHV Change", "% Disabled", 
+                                "Household Income Increase", "% Unemployed"),
+           omit.stat = "all", 
+           digits = 2 )
+```
+
+*There are many factors that affect Median Home Value and can lead to a change in value. In addition, these factors affect one another which lead to a greater or lesser affect on the Home Value. The most signficant factor was the Increase in Household Income from 2000 to 2010 which in turn has an effect on the Home Value. This is not surprising as individuals would have the ability to put forced appreciation in their home by making improvements due to the increased income. Another factor that was relatively high was the percent of unemployment. Again, it is not all that surprising as the lower the unemployment rate, the more likely people will be able to add value to their home. It is critical to not choose values that would cause multicollearity effect and therefore, not show the result of being significant. Percent of unemployment, increase in household income, and percent disabled are all unrelated enough to not have that effect.*
+
+

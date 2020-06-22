@@ -1,0 +1,222 @@
+---
+title: 'Lab 3: Preparing Data For Analysis'
+author: "Ricky Duran"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+highlight: github
+theme: cayman
+Output:
+  prettydoc::html_pretty: null
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library( dplyr )
+library( pander )
+library( tidyr )
+
+```
+
+# Overview
+
+For this lab you will work on preparing your dataset for analysis and streamlining the process of making sense of the data by improving the documentation and by writing some helper functions that will allow you to query the Longitudinal Tracts Data Base to search for the variables you need for your analysis.
+
+The LTDB is a great resource for over-time analysis of communities because they have harmonized 40 years of census data by apportioning old data so it fits the new 2010 census tracts and allows for analysis of consistent geographic units over time (if you are changing your tract boundaries and adding more tracts but not changing older data your analysis will be completely meaningless).
+
+Unfortunately, they have done an OK job a documentation but a horrible job at making the data easy to use.
+
+To overcome this we are going to restructure our input census datasets to enable us to fully utilize the over-time aspects of the data.
+
+We are also going to build a machine-readable data dictionary to allow us to find the variables we need quickly using some custom functions you will write.
+
+## Data Dictionary
+
+```{r}
+dd <- read.csv( "C:/Users/rduran3/Dropbox (ASU)/MPP/CPP 528 - Data Sciences III/group1project/cpp-528-spr-2020-group-01/data/raw/LTDB-DATA-DICTIONARY.CSV", stringsAsFactors=F )
+```
+
+## Data Wriangling
+
+```{r}
+
+setwd( "C:/Users/rduran3/Dropbox (ASU)/MPP/CPP 528 - Data Sciences III/group1project/cpp-528-spr-2020-group-01/data/raw" )
+
+# print a list of files in the directory
+
+dir() %>% dput()
+
+these <-
+  c( "LTDB_Std_1970_fullcount.csv", "ltdb_std_1970_sample.csv", 
+     "LTDB_Std_1980_fullcount.csv", "ltdb_std_1980_sample.csv", 
+     "LTDB_Std_1990_fullcount.csv", "ltdb_std_1990_sample.csv", 
+     "LTDB_Std_2000_fullcount.csv", "ltdb_std_2000_sample.csv", 
+     "LTDB_Std_2010_fullcount.csv", "ltdb_std_2010_sample.csv" )
+
+
+# read a file
+# create code for type (full/sample)
+# create code for year
+# return a tidy table with var attributes
+
+all.sets <- NULL
+
+for( i in these )
+{
+  type <- ifelse( grepl( "sample", i ), "sample", "full" )
+  year <- substr( i, 10, 13 )
+  dat <- read.csv( i )
+  vars <- names(dat) 
+  d <- data.frame( vars, year, type, stringsAsFactors=F )
+  all.sets <- rbind( all.sets, d )
+  
+}
+
+head( all.sets )
+```
+
+```{r}
+length( unique( all.sets$vars ) )
+
+all.sets$year.t <- paste0( all.sets$year, ".", substr( all.sets$type, 1, 1 ) )
+
+x <- all.sets$vars
+
+x <- tolower(x)
+
+x[ x == "state" ]  <- "stateXX"
+x[ x == "county" ] <- "countyXX"
+x[ x == "tract" ]  <- "tractXX"
+x[ x == "tractid" ]  <- "tractidXX"
+
+# remove census SF and SP table suffixes
+# on handful of variable names 
+
+x <- gsub( "[0-9]{2}sp1$", "sp1XX", x )
+x <- gsub( "[0-9]{2}sp2$", "sp2XX", x )
+x <- gsub( "[0-9]{2}sf3$", "sf3XX", x )
+x <- gsub( "[0-9]{2}sf4$", "sf4XX", x )
+
+root <- substr( x, 1, nchar(x)-2 ) 
+#length( unique( var.root ) )
+
+
+all.sets$root <- root 
+
+d <- select( all.sets, root, year.t, vars )
+
+# convert from tidy table
+# to a matrix of variables
+#
+# one concept per row ("root")
+# columns are years + full or sample
+# cells are variable names from raw files
+
+dd <- spread( d, key=year.t, value=vars, fill="" )
+
+# copied variable names and definitions from the 
+# current PDF of the LTDB data dictionary
+
+y <- readClipboard()  
+
+def <- matrix( y, ncol=3, byrow=T )
+def <- as.data.frame( def, stringsAsFactors=F )
+names( def ) <- c("category","definition","root")
+def$root <- substr( def$root, 1, nchar(def$root)-3 ) 
+
+head( def )
+
+# add definitions to subset of vars
+
+dd <- merge( dd, def, by="root", all.x=T )
+
+new.order <- 
+  c("root","category","definition", 
+    "1970.f", "1970.s", "1980.f", "1980.s", 
+    "1990.f", "1990.s", 
+    "2000.f", "2000.s", "2010.f", "2010.s" )
+
+dd <- dd[ new.order ]
+
+# replace NAs with blank cells in definition column 
+dd$definition[ is.na( dd$definition ) ] <- ""
+dd$category[ is.na( dd$category ) ] <- ""
+
+write.csv( dd, "LTDB-DATA-DICTIONARY.CSV", row.names=F )
+saveRDS( dd, "LTDB-DATA-DICTIONARY.RDS" )
+
+write.csv( dd, "LTDB-DATA-DICTIONARYn.CSV", row.names=F )
+setwd( "C:/Users/rduran3/Dropbox (ASU)/MPP/CPP 528 - Data Sciences III/group1project/cpp-528-spr-2020-group-01/data/rodeo" )
+saveRDS( dd, "LTDB-DATA-DICTIONARYn.RDS" )
+```
+
+
+
+## Part 1: Data Concordance 
+
+```{r}
+head(dd,20) %>% pander()
+```
+
+## Part 2: Buld a Variable Filter
+
+I was not able to get my code to produce definitions or categories, so I am pulling my data dictionary
+
+```{r}
+dd <- read.csv( "C:/Users/rduran3/Dropbox (ASU)/MPP/CPP 528 - Data Sciences III/group1project/cpp-528-spr-2020-group-01/data/raw/LTDB-DATA-DICTIONARY.CSV", stringsAsFactors=F )
+```
+
+# 2.1 Pull from Catagory
+
+```{r}
+category <- function(x) {
+  these <- grepl(x, dd$category)
+  ddcat <- dd[ these, ]
+  return( ddcat )
+}
+
+category("housing")
+```
+
+# 2.2 Pull from Definition
+
+```{r}
+definition <- function(x) {
+  these <- grepl(x, dd$definition)
+  dddef <- dd[ these, ]
+  return( dddef )
+}
+
+definition("hispanic")
+```
+
+# 3 Filter by time period
+
+```{r}
+timeperiod <- function(x) {
+  these <- grepl( x, names(dd) )
+  ddtimeperiod <- dd[these,]
+  return( ddtimeperiod )
+}
+timeperiod("1970")
+```
+
+## Challenge Question:
+
+```{r}
+root_list <- function(x) {
+  these <- grepl( x, dd$root )
+  ddroot <- dd[these,]
+  return( ddroot )
+}
+
+root_list("hisp")
+```
+
+-------
+<br>
+
+Analysis Created By: Ricky Duran
+For: CPP 528 - Data Sciences for Public Service III
+Created On: "`r format(Sys.time(), '%B %d, %Y')`"
+
+<br>

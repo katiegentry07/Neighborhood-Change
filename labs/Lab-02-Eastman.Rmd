@@ -1,0 +1,189 @@
+---
+title: "Lab 02 - Developing Community Indices to Measure Change"
+author: "Jason Eastman"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=TRUE, message=FALSE, warning=FALSE, fig.width=10 )
+```
+
+## My Three Instruments and their Indepedent Variables
+
+* Economic Strength of the Community:
+  + % Unemployed
+  + Median HH Income, Total
+  + Median Home Value
+* Vulnerability of the Community, Low-Income Hispanics:
+  + % in poverty, Hispanics
+  + % speaking English not well, age 5+
+  + % Hispanic
+* Vulnerability of the Community, Single Female-Lead Homes:
+  + % Female-Headed Families with Children
+  + % Widowed, Divorced and Separated
+  + % Female Labor Force Participants
+
+### Latent Constructs
+
+* Economic Strength of the Community: This shows a small picture into economic growth. we can look at possilbe declines in unemployment while HH income and home values steadily go up.
+* Low-Income Hispanics: Using the three variables, we can find tracts where there is high volume of low-income hispanics, showing a vulnerability in the community.
+* Single Female-Lead Homes: We can use these varibales to find tracts with single females that are HH, showing a vulnerability in the community.
+
+## Libraries
+
+```{r}
+library(tidyverse)
+library( scales )        # variable transforms, formatting tables
+library( stargazer )     # formatting regression output
+library( dplyr )         # data wrangling
+library( pander )        # nice tables
+library( plyr )
+library( psycho )
+```
+
+
+
+## Load Data
+
+```{r}
+dataFull2000 <- read.csv( file = 'LTDB_Std_2000_fullcount.csv', stringsAsFactors=F )
+dataFull2010 <- read.csv( file = 'LTDB_Std_2010_fullcount.csv', stringsAsFactors=F )
+dataSample2000 <- read.csv( file = 'ltdb_std_2000_sample.csv', stringsAsFactors=F )
+dataSample2010 <- read.csv( file = 'ltdb_std_2010_sample.csv', stringsAsFactors=F )
+```
+
+```{r}
+URL <- "https://data.nber.org/cbsa-msa-fips-ssa-county-crosswalk/cbsatocountycrosswalk.csv"
+crosswalk <- read.csv( URL, stringsAsFactors=F )
+
+crosswalk$urban <- ifelse( crosswalk$cbsaname == "", "rural", "urban" )
+
+keep.these <- c( "countyname","state","fipscounty", 
+                 "msa","msaname", 
+                 "cbsa","cbsaname",
+                 "urban" )
+
+cw <- dplyr::select( crosswalk, keep.these )
+
+# merge into census data by county FIPS
+# watch the leading zeros problem
+```
+
+```{r}
+# First merge the 2000 Full data with the 2000 Sample data
+
+data2000 <- merge(dataFull2000, dataSample2000, by.x = 'TRTID10', by.y = 'TRTID10' )
+head(data2000)
+```
+
+```{r}
+# Next merge the 2000 Full/Sample data with the 2010 Full data.
+
+dataMerged <- merge(data2000, dataFull2010, by.x = 'TRTID10', by.y = 'tractid' )
+head(dataMerged)
+```
+
+```{r}
+# Then merge the dataMerged data with the 2010 Sample data.
+
+dataComplete <- merge(dataMerged, dataSample2010, by.x = 'TRTID10', by.y = 'tractid' )
+head(dataComplete)
+```
+
+```{r}
+# filter cw so there's only urban data.
+
+cw2 <- cw %>%
+  filter ( urban == "urban" )
+
+# merge the 2000-2010 data into the Urban data, keeping just the urban tracts.
+
+dataUrban <- merge( cw2, dataComplete, by.x = 'cbsa', by.y = 'cbsa10.x' )
+head(dataUrban)
+```
+
+**ATTENTION** This is as far as I got before I got sick. Here is the psuedo code for what I would finish as you asked for. Thank you for understanding.  EDIT: With the two day extension, I worked on it a bit more.
+
+```{r}
+# Pseudo Code
+
+# create a keep.these with only the data we need
+# use select to edit the data set to only keep the the data from keep.these
+
+# Calculating change Values for variables 
+censusChange1<-ddply(dataUrban,"TRTID10",summarise,
+       PopUnempChange = punemp12/(UNEMP00 +.01) - 1,
+       HHIncomeChange = hinc12/(HINC00 +.01) - 1,
+       HousePriceChange = log(mhmval12)/log((MHMVAL00)) - 1,
+       PovertyHispanicChange = nhpov12/(NHPOV00+.01) - 1,
+       PoorEnglishChange = lep12/(LEP00+.01) - 1,
+       PopHispanicChange = hisp10/(HISP00+.01) - 1,
+       FemaleFamiliesChange = fhh10/(FHH00+.01) - 1,
+       WidowedDivorcedChange = wds12/(WDS00+.01) - 1,
+       FemaleLaborForceChange = flabf12/(FLABF00 +.01) - 1
+)
+
+#remove NAs that result 
+censusChange1<-censusChange1[!duplicated(censusChange1$TRTID10),]
+```
+
+## Summary Statistics for Urban Tracts
+
+```{r}
+summary(censusChange1)
+```
+
+
+
+```{r}
+# Standardize the data 
+
+censusChange2 <- scale( censusChange1 )
+```
+
+```{r}
+summary(censusChange2)
+```
+
+## Reliability Scores
+
+**ATTN: This is as far as I could get being sick. Below is a quick mock up of the rest of the Lab**
+
+```{r}
+# Psuedo Code
+
+# find alpha score for three sets of three data
+```
+
+## Deliverables
+
+*Describe and justify the selection of the gentrification metrics*
+
+**ANSWER:**
+
+- Economic Strength of the Community: Unemployment change is important as we want to see a decrease in unemployment for good economic strength. HH Income and Median Home values are also good indicators of econmics stgrength by whether they are increasing or decreasing. If unemployment is rising and HH Income and Median Home Value are decreasing, then there is a economic problem in that community.
+
+- Low-Income Hispanics: Evaluating the persent of Hispanics in poverty, along with the percent of people who poorly speak english, along with the total Hispanic population, we can find tracts with low-income Hispanics.
+
+- Single Female-Lead Homes: Using the three varibables in combination: Female-Headed Families, widowed/Divorced/Seperated, and Female Labor Force, we can find tracts with high percentages of Single Female Headed Households. 
+
+*Describe the construction of your three neighborhood health indices and their reliability scores*
+
+**ANSWER:** I was too sick this past week to finish the coding to be able to give a proper construction of the three neighborhood health indices.
+
+*Present descriptive statistics on all of the metrics for all urban census tracts*
+
+**ANSWER:**
+
+- Unemployment went down while Household income and median home values went up.
+
+- % Hispanics in pverty, % with poor English, and Hispanic population all went down.
+
+- % Female-Headed Famniles, Widowed/Sparated/Divoced, and Female Labor Force all went up significantly.

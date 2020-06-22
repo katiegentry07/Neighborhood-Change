@@ -1,0 +1,377 @@
+---
+title: "Lab 06 - Adding Federal Program Data"
+author: "Jason Eastman"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    highlight: haddock
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo=TRUE, message=FALSE, warning=FALSE, fig.width=10 )
+```
+
+# Libraries
+
+```{r}
+library( dplyr )
+library( knitr )
+library( pander )
+library( stargazer )
+library( scales )
+library( ggplot2 )
+library( gridExtra )
+
+set.seed( 1234 )
+
+# For Stargazer
+s.type <- "text"
+```
+
+# Add Federal Program Data to Model
+
+## Load and Merge Datasets
+
+```{r}
+# Load datasets
+d1 <- readRDS( "data/rodeo/LTDB-2000.rds" )
+d2 <- readRDS( "data/rodeo/LTDB-2010.rds" )
+md <- readRDS( "data/rodeo/LTDB-META-DATA.rds" )
+
+d1 <- select( d1, - year )
+d2 <- select( d2, - year )
+
+# Merge datasets
+d <- merge( d1, d2, by="tractid" )
+census_data <- merge( d, md, by="tractid" )
+
+```
+
+## Add Federal Data
+
+```{r}
+URL1 <- "https://raw.githubusercontent.com/DS4PS/cpp-528-spr-2020/master/labs/data/raw/NMTC/nmtc-sheet-01.csv"
+nmtc <- read.csv( URL1, stringsAsFactors=F )
+
+URL <- "https://raw.githubusercontent.com/DS4PS/cpp-528-spr-2020/master/labs/data/raw/LIHTC/LIHTCPUB.csv"
+lihtc <- read.csv( URL, stringsAsFactors=F )
+```
+
+## Clean Up Census Data
+
+```{r}
+census_data$id2 <- gsub( "[^0-9]", "", census_data$tractid )
+
+census_data$id2 <- as.numeric( census_data$id2 )
+```
+
+## Aggregate Fed data
+
+### LIHTC
+
+```{r}
+lihtc.dollars <-
+  lihtc %>% 
+  filter( yr_alloc >= 2000 & yr_alloc <= 2010 ) %>%
+  group_by( fips2010 ) %>%
+  summarize( num.lihtc = n(), lihtc.total = sum( allocamt, na.rm=T ) )
+
+head( lihtc.dollars )
+```
+
+### NMTC
+
+```{r}
+# need to convert from currency to numeric
+# current format: 
+# head( nmtc$QLICI.Amount )
+# [1] "$300,000.00 "   "$1,008,750.00 " "$977,000.00 "
+
+# remove dollar sign and commas
+nmtc$amount <- gsub( "[,$]", "", nmtc$QLICI.Amount )
+
+# head(  nmtc$amount  )
+# "300000.00 "  "1008750.00 " "977000.00 "
+
+# convert characters to numeric 
+nmtc$amount <- as.numeric( nmtc$amount ) %>% round(0)
+
+# head(  nmtc$amount  )
+# [1]  300000 1008750  977000
+
+nmtc.dollars <- 
+  nmtc %>% 
+  filter( Origination.Year >= 2000 & Origination.Year <= 2010 ) %>%
+  group_by( X2010.Census.Tract ) %>% 
+  summarize( num.nmtc=n(), nmtc.total = sum( amount, na.rm=T ) )
+
+head( nmtc.dollars )
+```
+
+## Merge Census and Tax Policy
+
+```{r}
+census_data <- merge( census_data, nmtc.dollars, by.x="id2", by.y="X2010.Census.Tract", all.x=T )
+census_data <- merge( census_data, lihtc.dollars, by.x="id2", by.y="fips2010", all.x=T )
+
+# recode tracts that had no grants from NA to 0
+
+census_data$num.nmtc[ is.na(census_data$num.nmtc) ] <- 0
+census_data$nmtc.total[ is.na(census_data$nmtc.total) ] <- 0
+
+census_data$num.lihtc[ is.na(census_data$num.lihtc) ] <- 0 
+census_data$lihtc.total[ is.na(census_data$lihtc.total) ] <- 0
+```
+
+## Remove Rural Districts
+
+```{r}
+census_data <- filter( census_data, urban == "urban" )
+```
+
+## Save Data into a Master
+
+```{r}
+data_master <- census_data
+```
+
+## Create New MHV Variables
+
+```{r}
+census_data <- data_master
+
+ # adjust 2000 home values for inflation 
+mhv.00 <- census_data$mhmval00 * 1.28855  
+mhv.10 <- census_data$mhmval12
+
+# change in MHV in dollars
+mhv.change <- mhv.10 - mhv.00
+
+# drop low 2000 median home values
+# to avoid unrealistic growth rates.
+#
+# tracts with homes that cost less than
+# $10,000 are outliers
+mhv.00[ mhv.00 < 1000 ] <- NA
+
+# change in MHV in percent
+mhv.growth <- 100 * ( mhv.change / mhv.00 )
+
+# drop high growth rate above 200%
+# to avoid unrealistic growth rates.
+#
+# tracts with growth rates that are
+# above 200% are outliers
+mhv.growth[ mhv.growth > 200 ] <- NA
+
+# Add variables into dataset
+census_data$mhv.00 <- mhv.00
+census_data$mhv.10 <- mhv.10
+census_data$mhv.change <- mhv.change
+census_data$mhv.growth <- mhv.growth 
+
+# Peek at new variables
+peek_at_data <- census_data %>%
+  select(tractid, mhv.00, mhv.10, mhv.change, mhv.growth)
+
+head(peek_at_data)
+```
+
+## Calculate New Metrics
+
+```{r}
+# Create subset , keeping only values we want
+census_data <- select( census_data, 
+             
+             tractid, cbsa, cbsaname,            # ids / units of analysis
+             
+             mhv.00, mhv.10, mhv.change, mhv.growth,    # home value 
+             
+             hinc00, hu00, own00, rent00,        # ses
+             hinc12, hu10, own10, rent10,
+             
+             empclf00, clf00, unemp00, prof00, flabf00,   # employment 
+             empclf12, clf12, unemp12, prof12, flabf12,
+             
+             dpov00, npov00,                     # poverty
+             dpov12, npov12,
+             
+             ag5up00, ag25up00, hs00, col00, lep00,             # education 
+             ag5up12, ag25up12, hs12, col12, lep12,
+             
+             pop00.x, nhwht00, nhblk00, hisp00, asian00,   # race
+             pop10, nhwht10, nhblk10, hisp10, asian10,
+             
+             num.nmtc, nmtc.total,              # tax policy data
+             num.lihtc, lihtc.total             # aggregated by census tract
+             ) # end select
+
+census_data <- 
+  census_data %>%
+  mutate( 
+          # 2000 variables
+          p.white.00 = 100 * nhwht00 / pop00.x,
+          p.black.00 = 100 * nhblk00 / pop00.x,
+          p.hisp.00 = 100 * hisp00 / pop00.x, 
+          p.asian.00 = 100 * asian00 / pop00.x,
+          p.col.edu.00 = 100 * col00 / ag25up00,
+          p.prof.00 = 100 * prof00 / empclf00,
+          p.unemp.00 = 100 * unemp00 / clf00,
+          pov.rate.00 = 100 * npov00 / dpov00,
+          
+          # 2010 variables
+          p.white.10 = 100 * nhwht10 / pop10,
+          p.black.10 = 100 * nhblk10 / pop10,
+          p.hisp.10 = 100 * hisp10 / pop10, 
+          p.asian.10 = 100 * asian10 / pop10,
+          p.col.edu.10 = 100 * col12 / ag25up12,
+          p.prof.10 = 100 * prof12 / empclf12,
+          p.unemp.10 = 100 * unemp12 / clf12,
+          pov.rate.10 = 100 * npov12 / dpov12,
+
+          # More Chosen Variables added for 2000
+          p.lep.00 = 100 * ( lep00 / ( ag5up00 + 0.01 )),
+          p.flabf.00 = 100 * ( flabf00 / (clf00 + 0.01 )),
+          
+          # More Chosen Variables added for 2010
+          p.lep.10 = 100 * ( lep12 / ( ag5up12 + 0.01 )),
+          p.flabf.10 = 100 * ( flabf12 / (clf12 + 0.01 ))
+  )
+
+census_data$p.unemp.00 <- log( census_data$p.unemp.00 + 1)
+census_data$p.lep.00 <- log( census_data$p.lep.00 + 1)
+census_data$p.unemp.10 <- log( census_data$p.unemp.10 + 1)
+census_data$p.lep.10 <- log( census_data$p.lep.10 + 1)
+
+
+# inflation adjust income 
+census_data$hinc00 <- 1.28855 * census_data$hinc00
+
+# Create new variables
+census_data <- 
+  census_data %>%
+  group_by( cbsaname ) %>%
+  mutate( # metro rank of home value in 2000
+          metro.mhv.pct.00 = ntile( mhv.00, 100 ),
+          # metro rank of home value in 2010
+          metro.mhv.pct.10 = ntile( mhv.10, 100 ),
+          # median pay for metro area 2000
+          metro.median.pay.00 = median( hinc00, na.rm=T ),
+          # median pay for metro area 2010
+          metro.median.pay.10 = median( hinc12, na.rm=T ),
+          # tract rank in metro area for diversity (% non-white)
+          metro.diversity.rank.00 = ntile( (100-p.white.00), 100 ),
+          # metro total population 2000
+          metro.pop.total.00 = sum( pop00.x, na.rm=T ),
+          # metro total population 2010
+          metro.pop.total.10 = sum( pop10, na.rm=T ),
+          
+          # More added variables
+          
+          # tract rank in metro area for unemployment in 2000
+          metro.unemp.rank.00 = ntile( p.unemp.00, 100 ),
+          # tract rank in metro area for unemployment in 2010
+          metro.unemp.rank.10 = ntile( p.unemp.10, 100 ),
+          # tract rank in metro area for Low English Speaking in 2000
+          metro.lep.rank.00 = ntile( p.lep.00, 100 ),
+          # tract rank in metro area for Low English Speaking in 2010
+          metro.lep.rank.10 = ntile( p.lep.10, 100 ),
+          # tract rank in metro area for Female Labor Force in 2000
+          metro.flabf.rank.00 = ntile( p.flabf.00, 100 ),
+          # tract rank in metro area for Female Labor Force in 2010
+          metro.flabf.rank.10 = ntile( p.flabf.10, 100 )
+          ) %>%
+  ungroup() %>%
+    mutate( # change in relative rank of mhv in metro area 2000-2010
+          metro.mhv.pctile.change = metro.mhv.pct.10 - metro.mhv.pct.00,
+          # growth in ave pay in metro
+          metro.pay.change = metro.median.pay.10 - metro.median.pay.00,
+          # metro population growth 2000-2010
+          metro.pop.growth =
+            ( metro.pop.total.10 - metro.pop.total.00 ) / metro.pop.total.00,
+          # increase in the proportion of whites in tract 
+          increase.p.white = p.white.10 - p.white.00,
+          
+          # More Added Variables
+          
+          # Growth in Unemployment from 2000 to 2010
+          unemp.growth = p.unemp.10 - p.unemp.00,
+          # Growth in Low English Speaking people from 2000 to 2010
+          lep.growth = p.lep.10 - p.lep.00,
+          # Growth in Female Labor Force from 2000 to 2010
+          flabf.growth = p.flabf.10 - p.flabf.00
+          )
+
+# Round the entire dataset to 2 digits
+is.num <- sapply(census_data, is.numeric)
+census_data[is.num] <- lapply(census_data[is.num], round, 2)
+
+# Create a true/false code for recipient tracts
+census_data$LIHTC <- ifelse( census_data$num.lihtc > 0, "YES", "NO" )
+census_data$NMTC <- ifelse( census_data$num.nmtc > 0, "YES", "NO" )
+
+head(census_data)
+```
+
+# Diff in Diff Models
+
+## Diff in Diff Model for Unemployment
+
+**ANSWER:  See Code and output below for more info. From looking at Unemployment change between treatment and baseline groups, there is very little secualr trend (0.29). On the other hand, the treatment group shows a 10 percentage points decay than the baseline group.**
+
+```{r}
+y1 <- census_data$metro.unemp.rank.00
+y2 <- census_data$metro.unemp.rank.10
+treat <- as.numeric( census_data$num.nmtc > 0 )
+
+d1 <- data.frame( y=y1, treat=treat, post=0 )
+d2 <- data.frame( y=y2, treat=treat, post=1 )
+
+diff_in_diff <- rbind( d1, d2 )
+
+reg_diff <- lm( y ~ treat + post + treat*post, data=diff_in_diff )
+
+summary( reg_diff ) 
+```
+
+## Diff in Diff Model for Low English Speaking People
+
+**ANSWER:  See Code and output below for more info. We see that the baseline group shows very little to no growth rate (0.07), and moreover, the treatment growth shows a neglegent lesser growth (-2.77) than the baseline.**
+
+```{r}
+y1 <- census_data$metro.lep.rank.00
+y2 <- census_data$metro.lep.rank.10
+treat <- as.numeric( census_data$num.nmtc > 0 )
+
+d1 <- data.frame( y=y1, treat=treat, post=0 )
+d2 <- data.frame( y=y2, treat=treat, post=1 )
+
+diff_in_diff <- rbind( d1, d2 )
+
+reg_diff <- lm( y ~ treat + post + treat*post, data=diff_in_diff )
+
+summary( reg_diff ) 
+```
+
+## Diff in Diff Model for Female Labor Force
+
+**ANSWER: See Code and output below for more info. Here, both cases show neglegent to no growth, nor a difference between the baseline and the treatment groups.**
+
+```{r}
+y1 <- census_data$metro.flabf.rank.00
+y2 <- census_data$metro.flabf.rank.10
+treat <- as.numeric( census_data$num.nmtc > 0 )
+
+d1 <- data.frame( y=y1, treat=treat, post=0 )
+d2 <- data.frame( y=y2, treat=treat, post=1 )
+
+diff_in_diff <- rbind( d1, d2 )
+
+reg_diff <- lm( y ~ treat + post + treat*post, data=diff_in_diff )
+
+summary( reg_diff ) 
+```

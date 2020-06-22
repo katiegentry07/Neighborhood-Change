@@ -1,0 +1,156 @@
+---
+title: 'lab 2: Developing Community Indicies to Measure Change'
+author: "Ricky Duran"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+highlight: github
+theme: cayman
+Output:
+  prettydoc::html_pretty: null
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library( dplyr )   # data wrangling
+library( xtable )  # nice tables 
+library( pander )  # nice tables 
+library( psych )   # calculate instrument reliability (alpha)
+library( ggplot2 ) # graphics
+library( tidyr )   # wrangling 
+```
+
+# Overview
+
+We are going to look at how distressed urban communities change between 2000 and 2010. Median home value with be one of the primary variables we will use in the model since it captures a lot of information about the ‘neighborhood’ (census tract). But we will also utilize some neighborhood health metrics as predictors and outcomes.
+
+## Data
+
+The below code allows us to pull only "urban" tracts (pop >= 50,000) of a data set.
+
+```{r}
+URL <- "https://data.nber.org/cbsa-msa-fips-ssa-county-crosswalk/cbsatocountycrosswalk.csv"
+crosswalk <- read.csv( URL, stringsAsFactors=F )
+
+# all metro areas in the country
+sort( unique( crosswalk$cbsaname ) )
+
+crosswalk$urban <- ifelse( crosswalk$cbsaname == "", "rural", "urban" )
+
+keep.these <- c( "countyname","state","fipscounty", 
+                 "msa","msaname", 
+                 "cbsa","cbsaname",
+                 "urban" )
+
+cw <- dplyr::select( crosswalk, keep.these )
+```
+
+```{r}
+dat00 <- read.csv( "C:/Users/rduran3/Dropbox (ASU)/MPP/CPP 528 - Data Sciences III/group1project/cpp-528-spr-2020-group-01/data/data-raw/ltdb_std_2000_sample.csv", header=T)
+dat10 <- read.csv( "C:/Users/rduran3/Dropbox (ASU)/MPP/CPP 528 - Data Sciences III/group1project/cpp-528-spr-2020-group-01/data/data-raw/ltdb_std_2010_sample.csv", header=T)
+```
+
+We can can filter these tracts to produce only urban areas (CBSA >= 50,000) by combinning the data with only urban tracts of the data set.
+
+```{r}
+cw_urban <- cw %>%
+  filter (urban == "urban")
+dat00_urban <- merge( dat00, cw_urban, by.x = "cbsa10", by.y = "cbsa")
+dat00_urban
+```
+
+# Part 1: Gentrification Metrics
+
+The 3 instruments that I am intending to look at are:
+
+**Professional Employees PROF00:** As a measure of individual wellbing, this variable allows us to examine the economic strenth of an area. Since professsional level employment gives an individual a greater degree of financial security (higher payrates) and stability (typically include additional benefits, such as insurance), knowing the proportion of a community that possesses professional employment, allows us to understand the economic security of that community.
+**Foreign Born Community Member (FB00):** As a measure of individual "wellbing" struggle, this variable allows us to examine the vulnerability of an area. Since foreign-born individuals often face the barrier of cultural illiteracy, knowing the proportion of a community that is made up of forign-born community memebers, allows us to understand the vulnerability of that community.
+**College Educated Individuals (COL00):** Having a college education allows us to determine, not only the degree of professional knowledge a person may possess, but can also be an indicator of a persons possession of soft skills and 'grit' or perciverance. A higher degree of community memebers with a college education may give us an idea of community health. 
+
+# Part 2: Determining the Reliability of our Indicies
+
+By examining these indicies, we are able to determine the correlation and Cronbach's Alpha Score (Reliability) for this relationship. 
+
+
+```{r}
+stats <- as.data.frame( dat00_urban )
+names( stats )
+```
+
+```{r}
+# helper functions for pairs
+panel.cor <- function(x, y, digits=2, prefix="", cex.cor )
+{
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    # r <- abs(cor(x, y))
+    r <- round( cor(x, y), 2 )
+    txt <- paste( prefix, r, sep="" )
+    # txt <- format(c(r, 0.123456789), digits=digits)[1]
+    # txt <- paste( prefix, txt, sep="" )
+    if(missing(cex.cor)) cex <- 4 # 0.5/strwidth(txt)
+    
+    test <- cor.test(x,y)
+    # borrowed from printCoefmat
+    Signif <- symnum(test$p.value, corr = FALSE, na = FALSE,
+                  cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+                  symbols = c("***", "**", "*", ".", " "))
+    
+    text( 0.5, 0.5, txt, cex = 0.6*cex )
+    text( 0.7, 0.8, Signif, cex=cex, col=2 )
+}
+
+panel.smooth <- function( x, y, col=gray(0.7,0.4), bg=NA, pch=16, 
+                         cex=2, col.smooth="red", span=2/3, iter=3, ...) 
+{
+    points(x, y, pch = pch, col = col, bg = bg, cex = cex)
+    ok <- is.finite(x) & is.finite(y)
+    if (any(ok)) 
+        lines( stats::lowess(x[ok], y[ok], f = span, iter = iter), 
+            col = col.smooth, lwd=2, ...)
+}
+
+panel.cor2 <- function(x, y, digits=2, prefix="" )
+{
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+  r <- round( abs( cor(x, y)), 2 )
+  txt <- paste( prefix, r, sep="" )
+    text( 0.5, 0.5, txt, cex = 2 )
+}
+```
+## Selected Variable Correlation:
+
+Below we can see a visualization that allows us to compare correlations between variables. Noticing a high collelation between Professional Employment and College Educated Individuals, and a low correlation between thos variables and being forign-born. Although not all variables have strong corelations, I would like to point out that they all relationships are statistically significant. 
+
+```{r}
+df <- dplyr::select( stats, 'PROF00', 'FB00', 'COL00' )
+pairs( df, lower.panel=panel.smooth, upper.panel=panel.cor )
+```
+
+## Selected Variable Alpha Score
+
+```{r}
+a1 <- psych::alpha( df, check.keys=TRUE )$total$raw_alpha
+a1
+```
+
+With an Cronbach's Alpha Score of 71.82% we are able to say that this relationship is reliable.
+
+# Part 3:	Descriptive Statistics of Metrics.
+
+Below you will find the summary statistics for the variables being analized:
+
+```{r}
+summary (df) %>% pander()
+```
+
+This data give you an idea of the distribution of the variables we are examining, allowing us to see how greatly communities differ amongst these variables.
+
+-------
+<br>
+
+Analysis Created By: Ricky Duran
+For: CPP 528 - Data Sciences for Public Service III
+Created On: "`r format(Sys.time(), '%B %d, %Y')`"
+
+<br>
